@@ -1,0 +1,117 @@
+- name: "Adding Container Groups to AWX"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    debug: false
+    validate_certs: false
+    container_group:
+      name: "AWX Container Group Demo"
+      namespace: "awx-cg-demo"
+      serviceaccount: "awx-cg-serviceaccount"
+      pull_secret: "awx-cg-pull-secret"
+  tasks:
+    - name: "Validate the environment variables are set for AWX module"
+      ansible.builtin.fail:
+        msg: "The environment variable {{ item }} is not set"
+      when: lookup('env', item) | length == 0
+      with_items:
+        - CONTROLLER_HOST
+        - CONTROLLER_USERNAME
+        - CONTROLLER_PASSWORD
+    - name: "Get cluster-info for the target cluster"
+      kubernetes.core.k8s_cluster_info:
+      register: cluster_info
+    - name: "Set cluster_url from cluster_info"
+      ansible.builtin.set_fact:
+        cluster_url: "{{ cluster_info.connection.host }}"
+    - name: "DEBUG: print cluster-info for the target cluster"
+      ansible.builtin.debug:
+        msg: "{{ cluster_info.connection.host }}"
+      no_log: "{{ not debug }}"
+    - name: "Creating Namespace on target cluster"
+      kubernetes.core.k8s:
+        state: "present"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ container_group.namespace }}"
+      register: namespace_info
+    - name: "Template containergroup_sa.yml.j2 and apply"
+      kubernetes.core.k8s:
+        state: "present"
+        definition: "{{ lookup('template', 'containergroup_sa.yml.j2') }}"
+    - name: "Create ImagePullSecret on target cluster"
+      kubernetes.core.k8s:
+        state: "present"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ container_group.serviceaccount }}-pull-secret"
+            namespace: "{{ container_group.namespace }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ lookup('file', lookup('env', 'IMAGE_PULL_SECRET_FILE')) | b64encode }}"
+      when: lookup('env', 'IMAGE_PULL_SECRET_FILE') != ""
+    - name: "Add ImagePullSecret to default ServiceAccount on target cluster"
+      kubernetes.core.k8s:
+        state: "present"
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ container_group.serviceaccount }}"
+            namespace: "{{ container_group.namespace }}"
+          imagePullSecrets:
+            - name: "{{ container_group.pull_secret }}"
+    - name: "Create ServiceAccount token Secret"
+      kubernetes.core.k8s:
+        state: "present"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ container_group.serviceaccount }}-token"
+            namespace: "{{ container_group.namespace }}"
+            annotations:
+              kubernetes.io/service-account.name: "{{ container_group.serviceaccount }}"
+          type: kubernetes.io/service-account-token
+    - name: "Get ServiceAccount token Secret"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ container_group.serviceaccount }}-token"
+        namespace: "{{ container_group.namespace }}"
+        field_selectors:
+          - type=kubernetes.io/service-account-token
+      register: token_secret_info
+    - name: "DEBUG: print token_secret_info"
+      ansible.builtin.debug:
+        msg: "{{ token_secret_info }}"
+      no_log: "{{ not debug }}"
+    - name: "Set serviceaccount_token"
+      ansible.builtin.set_fact:
+        serviceaccount_token: "{{ token_secret_info.resources[0].data.token | b64decode }}"
+    - name: "DEBUG: print serviceaccount_token"
+      ansible.builtin.debug:
+        msg: "{{ serviceaccount_token }}"
+      no_log: "{{ not debug }}"
+    - name: "Create Credential for target cluster in AWX"
+      awx.awx.credential:
+        name: "{{ container_group.name }}"
+        organization: "Default"
+        credential_type: "OpenShift or Kubernetes API Bearer Token"
+        inputs:
+          bearer_token: "{{ serviceaccount_token }}"
+          host: "{{ cluster_url }}"
+          verify_ssl: "{{ validate_certs }}"
+        state: present
+    - name: "Create Container Group for target cluster in AWX"
+      awx.awx.instance_group:
+        name: "{{ container_group.name }}"
+        credential: "{{ container_group.name }}"
+        is_container_group: true
+        pod_spec_override: "{{ lookup('template', 'pod_spec_override.yml.j2') }}"
+        state: present
