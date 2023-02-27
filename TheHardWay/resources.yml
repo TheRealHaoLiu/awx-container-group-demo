@@ -1,0 +1,53 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: awx-cg-demo-manual
+spec:
+  finalizers:
+  - kubernetes
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: awx-cg-demo-manual
+  namespace: awx-cg-demo-manual
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: awx-cg-demo-manual-role
+  namespace: awx-cg-demo-manual
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/attach"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: awx-cg-demo-manual-rolebinding
+  namespace: awx-cg-demo-manual
+subjects:
+- kind: ServiceAccount
+  name: awx-cg-demo-manual
+  namespace: awx-cg-demo-manual
+roleRef:
+  kind: Role
+  name: awx-cg-demo-manual-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: awx-cg-demo-manual-token
+  annotations:
+    kubernetes.io/service-account.name: awx-cg-demo-manual
+type: kubernetes.io/service-account-token
+
